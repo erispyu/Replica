@@ -1,0 +1,214 @@
+#!/usr/bin/env python
+
+import sys, socket, select, time, json, random
+
+# Your ID number
+my_id = sys.argv[1]
+
+# The ID numbers of all the other replicas
+replica_ids = sys.argv[2:]
+
+# Connect to the network. All messages to/from other replicas and clients will
+# occur over this socket
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+sock.connect(my_id)
+
+last = 0
+curr_term = 0
+last_voted_for = 0
+log = []
+kv_store = {}
+last_log_committed = 0
+last_log_applied = 0
+next_log = None
+matched_index = None
+num_votes = 0
+
+
+# get random timeout between 150ms to 300ms
+def get_random_timeout():
+    return random.uniform(150, 300) / 100.0
+
+
+random_timeout = get_random_timeout()
+leader = "FFFF"
+
+
+def leader_elected(leader_elected, term_elected):
+    global leader, curr_term, num_votes
+    leader = leader_elected
+    curr_term = term_elected
+    num_votes = 0
+
+
+def send_heartbeat():
+    global my_id, leader, curr_term, last_log_committed, sock, log
+    last_log_index = 0
+    last_log_term = 0
+    if len(log):
+        last_log_index = len(log) - 1
+        last_log_term = log[-1]['term']
+    heartbeat_msg = {
+        'src': my_id,
+        'dst': 'FFFF',
+        'leader': leader,
+        'type': 'append_entry',
+        'term': curr_term,
+        'lastLogIndex': last_log_index,
+        'lastLogTerm': last_log_term,
+        'entries': [],
+        'leaderCommit': last_log_committed
+    }
+    sock.send(json.dumps(heartbeat_msg))
+
+
+def request_vote():
+    global curr_term, num_votes, last_voted_for, random_timeout, leader, my_id, sock, log
+    curr_term += 1
+    num_votes = 1
+    last_voted_for = None
+    random_timeout = get_random_timeout()
+    last_log_index = 0
+    last_log_term = 0
+    if len(log):
+        last_log_index = len(log) - 1
+        last_log_term = log[-1]['term']
+    request_vote_msg = {
+        'src': my_id,
+        'dst': "FFFF",
+        'leader': leader,
+        'type': 'request_vote',
+        'term': curr_term,
+        'candidateId': my_id,
+        'lastLogIndex': last_log_index,
+        'lastLogTerm': last_log_term
+    }
+    sock.send(json.dumps(request_vote_msg))
+
+
+def respond_to_request_vote(term, candidate_id, last_log_index, last_log_term):
+    global my_id, leader, curr_term, last_voted_for, sock, log
+
+    my_last_log_term = 0
+    if len(log):
+        my_last_log_term = log[-1]['term']
+
+    respond_msg = {
+        'src': my_id,
+        'dest': candidate_id,
+        'leader': leader,
+        'type': 'respond_vote'
+    }
+
+    if term < curr_term:
+        respond_msg['response'] = False
+    elif (last_voted_for is None or last_voted_for == candidate_id) and last_log_term >= my_last_log_term and last_log_index >= (len(log) - 1):
+        respond_msg['response'] = True
+
+    sock.send(json.dumps(respond_msg))
+
+
+def receive_respond_vote(respond_msg):
+    global num_votes, leader, my_id, replica_ids, curr_term, sock
+    if respond_msg:
+        num_votes += 1
+    if num_votes >= ((len(replica_ids) / 2) + 1):
+        leader = my_id
+        receive_msg = {
+            'src': my_id,
+            'dst': 'FFFF',
+            'leader': leader,
+            'type': 'leader_elected',
+            'term': curr_term
+        }
+        sock.send(json.dumps(receive_msg))
+        num_votes = 0
+
+
+while True:
+    ready = select.select([sock], [], [], 0.1)[0]
+
+    if sock in ready:
+        msg_raw = sock.recv(32768)
+
+        if len(msg_raw) == 0:
+            continue
+
+        msg = json.loads(msg_raw)
+
+        # For now, ignore get() and put() from clients
+        if msg['type'] in ['get', 'put']:
+            if my_id == leader:
+                request = {
+                    'src': msg['src'],
+                    'key': msg['key'],
+                    'MID': msg['MID']
+                }
+                if msg['type'] == 'get':
+                    new_log = {
+                        'type': 'get',
+                        'request': request,
+                        'term': curr_term
+                    }
+                    log.append(new_log)
+                    value = kv_store[msg['key']] if msg['key'] in kv_store else ''
+
+                    response_msg = {
+                        'src': my_id,
+                        'dst': msg['src'],
+                        'leader': my_id,
+                        'type': 'ok',
+                        'MID': msg['MID'],
+                        'value': value
+                    }
+                else:
+                    request['value'] = msg['value']
+                    new_log = {
+                        'type': 'put',
+                        'request': request,
+                        'term': curr_term
+                    }
+                    log.append(new_log)
+                    kv_store[msg['key']] = msg['value']
+
+                    response_msg = {
+                        'src': my_id,
+                        'dst': msg['src'],
+                        'leader': my_id,
+                        'type': 'ok',
+                        'MID': msg['MID'],
+                    }
+
+                    send_heartbeat()
+
+            else:
+                response_msg = {
+                    'src': my_id,
+                    'dst': msg['src'],
+                    'leader': leader,
+                    'type': 'redirect',
+                    'MID': msg['MID']
+                }
+
+            sock.send(json.dumps(response_msg))
+
+        elif msg['type'] == 'request_vote':
+            respond_to_request_vote(msg['term'], msg['candidateId'], msg['lastLogIndex'], msg['lastLogTerm'])
+        elif msg['type'] == 'respond_vote':
+            receive_respond_vote(msg['response'])
+        elif msg['type'] == ['leader_elected']:
+            leader_elected(msg['leader'], msg['term'])
+        elif msg['type'] == 'append_entry':
+            last = time.time()
+            continue
+
+        # Handle noop messages. This may be removed from your final implementation
+        elif msg['type'] == 'noop':
+            print '%s received a NOOP from %s' % (msg['dst'], msg['src'])
+
+    clock = time.time()
+    if clock - last > random_timeout / 2 and id == leader:
+        send_heartbeat()
+    elif clock - last > random_timeout:
+        request_vote()
+        last = clock
