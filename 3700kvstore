@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 
 import sys, socket, select, time, json, random
 
@@ -95,17 +95,17 @@ def respond_to_request_vote(term, candidate_id, last_log_index, last_log_term):
 
     respond_msg = {
         'src': my_id,
-        'dest': candidate_id,
+        'dst': candidate_id,
         'leader': leader,
         'type': 'respond_vote'
     }
 
     if term < curr_term:
         respond_msg['response'] = False
+        sock.send(json.dumps(respond_msg))
     elif (last_voted_for is None or last_voted_for == candidate_id) and last_log_term >= my_last_log_term and last_log_index >= (len(log) - 1):
         respond_msg['response'] = True
-
-    sock.send(json.dumps(respond_msg))
+        sock.send(json.dumps(respond_msg))
 
 
 def receive_respond_vote(respond_msg):

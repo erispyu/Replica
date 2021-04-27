@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 
 import getpass, os, argparse, atexit
 from run import Simulation
