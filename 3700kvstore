@@ -151,16 +151,31 @@ while True:
                         'term': curr_term
                     }
                     log.append(new_log)
-                    value = kv_store[msg['key']] if msg['key'] in kv_store else ''
-
-                    response_msg = {
-                        'src': my_id,
-                        'dst': msg['src'],
-                        'leader': my_id,
-                        'type': 'ok',
-                        'MID': msg['MID'],
-                        'value': value
-                    }
+                    if msg['key'] in kv_store:
+                        value = kv_store[msg['key']]
+                        response_msg = {
+                            'src': my_id,
+                            'dst': msg['src'],
+                            'leader': my_id,
+                            'type': 'ok',
+                            'MID': msg['MID'],
+                            'value': value
+                        }
+                        sock.send(json.dumps(response_msg))
+                    # elif 'value' in msg:
+                    #     value = msg['value']
+                    # else:
+                    #     # print "********************msg********************"
+                    #     # for key in msg:
+                    #     #     print key + ": " + msg[key]
+                    #     # print "********************log********************"
+                    #     # for recorded_log in log:
+                    #     #     print 'type: ' + recorded_log['type']
+                    #     #     print 'term:' + str(recorded_log['term'])
+                    #     #     for key in recorded_log['request']:
+                    #     #         print key + ": " + recorded_log['request'][key]
+                    #     value = ''
+                    
                 else:
                     request['value'] = msg['value']
                     new_log = {
@@ -170,6 +185,9 @@ while True:
                     }
                     log.append(new_log)
                     kv_store[msg['key']] = msg['value']
+                    # print "********************put********************"
+                    # print "key: " + msg['key']
+                    # print 'value: ' + msg['value']
 
                     response_msg = {
                         'src': my_id,
@@ -180,6 +198,7 @@ while True:
                     }
 
                     send_heartbeat()
+                    sock.send(json.dumps(response_msg))
 
             else:
                 response_msg = {
@@ -189,8 +208,7 @@ while True:
                     'type': 'redirect',
                     'MID': msg['MID']
                 }
-
-            sock.send(json.dumps(response_msg))
+                sock.send(json.dumps(response_msg))
 
         elif msg['type'] == 'request_vote':
             respond_to_request_vote(msg['term'], msg['candidateId'], msg['lastLogIndex'], msg['lastLogTerm'])
